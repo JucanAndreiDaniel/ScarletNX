@@ -1316,8 +1316,10 @@ static int make_own(Vb* e, const u8* src) {
     VmaAllocation m;
     u64 so;
     if (vmaCreateBuffer(g_vk.vma, &bci, &aci, &b, &m, NULL) != VK_SUCCESS) return 0;
+    vk_mem_track(m);
     u8* p = vk_stage(len, vk_stage_align(), &sb, &so);
     if (!p) {
+        vk_mem_untrack(m);
         vmaDestroyBuffer(g_vk.vma, b, m);
         return 0;
     }

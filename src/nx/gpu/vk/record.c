@@ -45,6 +45,7 @@ static void rec_thread(void* arg) {
     (void)arg;
     (void)g_pad0;
     (void)g_pad1;
+    SNX_THREAD_NAME("vk record");
     for (;;) {
         u64 head = __atomic_load_n(&g_head, __ATOMIC_ACQUIRE);
         /* nothing more yet: sleep until the producer publishes (REC_PUBLISH). It spun 4000 pauses first, which with
@@ -57,11 +58,16 @@ static void rec_thread(void* arg) {
             __atomic_store_n(&g_sleep, 0, __ATOMIC_RELAXED);
             pm_unlock(&g_m);
         }
+        u64 records __attribute__((unused)) = 0; /* the zone's value; only the profiler reads it */
+        SNX_ZONE(z_rec, "vk record");
         while (tail != head) {
             const RecHdr* h = (const RecHdr*)(g_ring + (tail & (REC_CAP - 1)));
             if (h->fn) h->fn(h + 1);
             tail += h->size;
+            records++;
         }
+        SNX_ZONE_VALUE(z_rec, records);
+        SNX_ZONE_END(z_rec);
         __atomic_store_n(&g_tail, tail, __ATOMIC_RELEASE);
     }
 }

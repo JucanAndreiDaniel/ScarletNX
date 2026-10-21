@@ -26,6 +26,10 @@
 /* The caches live in shader_cache/ next to the games, shared by all of them, wherever the runtime was started from */
 static char g_cache_dir[1100], g_pcache_path[1200], g_pcache_tmp[1230];
 static int g_pcache_dirty; /* pipelines made since the cache was last written (atomic: it is saved outside vk_lock) */
+#if defined(SNX_TRACY)
+/* the stages' names, for the shader translate zone's text */
+static const char* const vk_tracy_stage[6] = {"vert", "tess ctrl", "tess eval", "geom", "frag", "comp"};
+#endif
 
 VkPipelineLayout g_vk_playout;
 VkDescriptorSetLayout g_vk_dslayout[2][5];
@@ -472,9 +476,13 @@ VkSh* vk_shader_get(const GpuChannel* ch, u64 gva, u64 gva_a, int stage, u64 int
             if (xfb) s->si.xfb = *xfb;
         }
         if (vk_corpus_dir()) shader_corpus_save(vk_corpus_dir(), code, mlen, 0x10000, stage, &s->si, h ^ mix);
+        SNX_ZONE(z_translate, "shader translate");
+        SNX_ZONE_TEXT(z_translate, "%s hash %08x", stage < 6 ? vk_tracy_stage[stage] : "stage?", (unsigned)(h ^ mix));
         u64 t0 = plat_ns();
         size_t nw = 0;
         u32* spv = vk_translate_spirv(code, 0x10000, stage, &s->si, &nw, sh_cb_read, &s->cbr);
+        SNX_ZONE_VALUE(z_translate, nw);
+        SNX_ZONE_END(z_translate);
         for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
         if (spv && s->si.nimg) {
             u32 image_slots = g_vk.props.limits.maxPerStageDescriptorStorageImages;
@@ -772,6 +780,7 @@ static VkPipeline pipe_create(const Pipe* e) {
 /* e's pipeline, made here. One a draw asked for is kept in the file (pf_pipe_record): once made when the GPU thread
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
 static VkPipeline pipe_make(const Pipe* e, int record) {
+    SNX_ZONE_T(z_pipe, "pipeline make", "hash %016llx", (unsigned long long)e->h);
     u64 t0 = plat_ns();
     VkPipeline p = pipe_create(e);
     __atomic_store_n(&g_pcache_dirty, 1, __ATOMIC_RELAXED);
@@ -793,6 +802,7 @@ static Pipe *g_pw_head, *g_pw_tail; /* the file's */
 static int g_pj_started, g_pj_threads;
 static void pipe_worker(void* arg) {
     (void)arg;
+    SNX_THREAD_NAME("pipeline");
     for (;;) {
         Pipe* e;
         VkPipeline p;
@@ -1211,6 +1221,7 @@ static void pf_load(void* arg) {
     u32 loaded[2];
     u64 t0 = plat_ns();
     (void)arg;
+    SNX_ZONE(z_load, "pipeline file load");
     pf_key(key, sizeof key);
     pf_open(&g_pf.file, g_pf.path, key, &load, loaded);
     LOG("vulkan: %u shaders and %u pipelines of earlier runs loaded from %s in %llu ms, the pipelines to be made in "
@@ -1220,6 +1231,10 @@ static void pf_load(void* arg) {
     g_pf.loaded = 1;
     pc_broadcast(&g_pf.done);
     pm_unlock(&g_pf.lock);
+}
+static void pf_load_thread(void* arg) {
+    SNX_THREAD_NAME("pipeline load");
+    pf_load(arg);
 }
 /* at the end of vk_pipeline_init: the file is read on a thread of its own, so startup doesn't wait for it */
 static void pf_start_load(void) {
@@ -1233,7 +1248,7 @@ static void pf_start_load(void) {
     g_pf.on = 1;
     null_fs(); /* made here, before the reading thread uses it */
     snprintf(g_pf.path, sizeof g_pf.path, "%s/%s.vkshaders", g_cache_dir, g_exename);
-    if (plat_thread(pf_load, NULL, (size_t)1 << 20)) pf_load(NULL); /* no thread: read here */
+    if (plat_thread(pf_load_thread, NULL, (size_t)1 << 20)) pf_load(NULL); /* no thread: read here */
 }
 /* the reading thread's shaders and pipelines into the tables, waiting for it the first time a draw needs them
    (vk_lock) */
